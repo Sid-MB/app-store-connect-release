@@ -81,6 +81,11 @@ function expandPath(path) {
   return resolve(path.startsWith("~/") ? `${homedir()}/${path.slice(2)}` : path);
 }
 
+/** Infer Apple's key ID from its standard AuthKey_<KEY_ID>.p8 download filename, while allowing renamed files to fall back to a prompt. */
+function inferKeyId(privateKeyPath) {
+  return basename(privateKeyPath).match(/^AuthKey_([a-z0-9]{10})\.p8$/i)?.[1]?.toUpperCase() ?? "";
+}
+
 /** Store one value in GitHub Actions without placing it in the command line or logs. */
 function setGitHubSecret(repository, name, value) {
   run("gh", ["secret", "set", name, "--repo", repository], { input: value });
@@ -230,9 +235,12 @@ async function setup() {
     ]
   });
   const issuerId = keyType === "team" ? await input({ message: "Paste the Issuer ID:", validate: (value) => value.trim() ? true : "Issuer ID is required for a team key." }) : "";
-  const keyId = await input({ message: "Paste the Key ID:", validate: (value) => value.trim() ? true : "Key ID is required." });
   const privateKeyPath = await input({ message: "Paste or drag the downloaded .p8 file path here:", validate: (value) => existsSync(expandPath(value.trim())) ? true : "That file does not exist." });
-  const privateKey = readFileSync(expandPath(privateKeyPath.trim()), "utf8").trim();
+  const expandedPrivateKeyPath = expandPath(privateKeyPath.trim());
+  const inferredKeyId = inferKeyId(expandedPrivateKeyPath);
+  if (inferredKeyId) step(`Inferred App Store Connect Key ID ${inferredKeyId} from ${basename(expandedPrivateKeyPath)}.`);
+  const keyId = inferredKeyId || await input({ message: "The .p8 filename is nonstandard. Paste the Key ID:", validate: (value) => value.trim() ? true : "Key ID is required." });
+  const privateKey = readFileSync(expandedPrivateKeyPath, "utf8").trim();
   try {
     createPrivateKey(privateKey);
   } catch {

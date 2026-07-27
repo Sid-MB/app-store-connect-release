@@ -28,7 +28,7 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 
 1. Identifies the current GitHub repository and its default branch.
 2. Helps you create either an App Store Connect team API key with App Manager access or an individual API key owned by an App Manager or higher.
-3. Validates the `.p8` private key locally and lists the apps available to it.
+3. Infers the Key ID from Apple's standard `AuthKey_<KEY_ID>.p8` filename, prompts only when the file was renamed, validates the private key locally, and lists the apps available to it.
 4. Provides a prefilled GitHub fine-grained token URL and asks you to restrict the token to the current repository with `Contents: write`.
 5. Signs in to Cloudflare, deploys an isolated Worker for the repository, and uploads its secrets.
 6. Stores the Apple API credentials as GitHub Actions secrets.
@@ -106,15 +106,17 @@ Open [App Store Connect API integrations](https://appstoreconnect.apple.com/acce
 For a team key:
 
 - Generate a key with **App Manager** access.
-- Copy its Issuer ID and Key ID.
+- Copy its Issuer ID.
 - Download the `.p8` private key.
 
 For an individual key:
 
 - The associated user must be Account Holder, Admin, or App Manager.
 - Open the user profile and generate the Individual API Key.
-- Copy its Key ID and download the `.p8` file.
+- Download the `.p8` file.
 - Do not configure an issuer ID; individual JWTs use `sub: user`.
+
+The CLI reads the Key ID from Apple's standard `AuthKey_<KEY_ID>.p8` filename. If the file has been renamed, it asks you to paste the Key ID as a fallback.
 
 Apple makes private keys downloadable only once. Keep the file secure and revoke it immediately if it is exposed.
 
