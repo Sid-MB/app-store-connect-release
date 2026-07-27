@@ -17,7 +17,7 @@
     "build": "npm run build:action && npm run build:cli",
     "build:action": "ncc build action/src/index.js --out dist/action --minify",
     "build:cli": "esbuild cli/src/index.js --bundle --packages=external --platform=node --target=node22 --format=esm --outfile=cli/dist/index.js --banner:js='#!/usr/bin/env node'",
-    "check": "node --check action/src/index.js && node --check cli/src/index.js && npm run build && WRANGLER_LOG_PATH=.wrangler/wrangler.log npx wrangler@4 deploy --config worker/wrangler.jsonc --dry-run --outdir .wrangler-build"
+    "check": "node --check action/src/index.js && node --check cli/src/index.js && npm run build && WRANGLER_LOG_PATH=.wrangler/wrangler.log npx wrangler deploy --config worker/wrangler.jsonc --dry-run --outdir .wrangler-build"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.8.6"

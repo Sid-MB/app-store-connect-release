@@ -30,7 +30,7 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 2. Helps you create either an App Store Connect team API key with App Manager access or an individual API key owned by an App Manager or higher.
 3. Infers the Key ID from Apple's standard `AuthKey_<KEY_ID>.p8` filename, prompts only when the file was renamed, validates the private key locally, and lists the apps available to it.
 4. Provides a prefilled GitHub fine-grained token URL and asks you to restrict the token to the current repository with `Contents: write`.
-5. Signs in to Cloudflare, deploys an isolated Worker for the repository, and uploads its secrets.
+5. Prompts for a Cloudflare Worker name with the default `<repository>-appstoreconnect-webhook-receiver`, signs in to Cloudflare, deploys the isolated Worker, and uploads its secrets.
 6. Stores the Apple API credentials as GitHub Actions secrets.
 7. Commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
 8. Creates or updates the matching App Store Connect webhook through `POST /v1/webhooks` or `PATCH /v1/webhooks/{id}`.
@@ -73,6 +73,8 @@ These are separate credentials for separate trust boundaries.
 | `GITHUB_DISPATCH_TOKEN` | Pasted during setup | Fine-grained token restricted to the target repository with `Contents: write`; used only for `repository_dispatch`. |
 
 The Worker also receives the non-secret `GITHUB_REPOSITORY=owner/repository` variable. Neither secret belongs in source control or in the target repository's Actions secrets.
+
+The CLI lets you choose the Worker name. Its default is `<repository>-appstoreconnect-webhook-receiver`, shortened when necessary to meet the 63-character `workers.dev` DNS-label limit. Custom names are normalized to lowercase before deployment.
 
 ### Target GitHub repository secrets
 
@@ -138,10 +140,10 @@ GitHub currently requires `Contents: write` for the repository dispatch endpoint
 Clone this repository, edit `worker/wrangler.jsonc`, and replace `owner/repository`:
 
 ```sh
-npx wrangler@4 login
-npx wrangler@4 deploy --config worker/wrangler.jsonc
-npx wrangler@4 secret put APPLE_WEBHOOK_SECRET --config worker/wrangler.jsonc
-npx wrangler@4 secret put GITHUB_DISPATCH_TOKEN --config worker/wrangler.jsonc
+npx wrangler login
+npx wrangler deploy --config worker/wrangler.jsonc
+npx wrangler secret put APPLE_WEBHOOK_SECRET --config worker/wrangler.jsonc
+npx wrangler secret put GITHUB_DISPATCH_TOKEN --config worker/wrangler.jsonc
 ```
 
 Generate `APPLE_WEBHOOK_SECRET` with:
