@@ -1,0 +1,43 @@
+name: Create App Store release
+
+on:
+  workflow_call:
+    inputs:
+      payload-json:
+        description: App Store Connect event forwarded by the Worker.
+        required: true
+        type: string
+      tag-template:
+        description: Tag template containing {version}.
+        required: false
+        type: string
+        default: v{version}
+      release-name-template:
+        description: Release name template containing {version}, {tag}, or {platform}.
+        required: false
+        type: string
+        default: "{tag}"
+    secrets:
+      APP_STORE_CONNECT_KEY_ID:
+        required: true
+      APP_STORE_CONNECT_PRIVATE_KEY:
+        required: true
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        uses: Sid-MB/app-store-connect-release@v1
+        with:
+          payload-json: ${{ inputs['payload-json'] }}
+          tag-template: ${{ inputs['tag-template'] }}
+          release-name-template: ${{ inputs['release-name-template'] }}
+          app-store-connect-key-id: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          app-store-connect-private-key: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          app-store-connect-issuer-id: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          github-token: ${{ github.token }}

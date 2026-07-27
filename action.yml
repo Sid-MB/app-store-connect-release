@@ -1,0 +1,49 @@
+name: App Store Connect Release
+description: Create a GitHub release from an existing tag when App Store Connect reports READY_FOR_DISTRIBUTION.
+author: Sid-MB
+branding:
+  icon: package
+  color: blue
+inputs:
+  payload-json:
+    description: The App Store Connect event forwarded in repository_dispatch.client_payload.
+    required: true
+  app-store-connect-key-id:
+    description: The App Store Connect API key ID.
+    required: true
+  app-store-connect-private-key:
+    description: The App Store Connect API private key in PEM format.
+    required: true
+  app-store-connect-issuer-id:
+    description: The issuer ID for a team key. Leave empty for an individual key.
+    required: false
+  github-token:
+    description: Token used to read tags and create the release.
+    required: true
+    default: ${{ github.token }}
+  tag-template:
+    description: Tag name template. {version} is replaced by the App Store version string.
+    required: false
+    default: v{version}
+  release-name-template:
+    description: Release name template. {version}, {tag}, and {platform} are supported.
+    required: false
+    default: "{tag}"
+  generate-release-notes:
+    description: Ask GitHub to generate changelog notes from merged pull requests and commits.
+    required: false
+    default: "true"
+  include-event-metadata:
+    description: Prepend non-secret App Store event details to the generated release notes.
+    required: false
+    default: "true"
+outputs:
+  created:
+    description: Whether this run created a new release.
+  release-url:
+    description: The created or existing GitHub release URL.
+  tag:
+    description: The version tag used for the release.
+runs:
+  using: node24
+  main: dist/action/index.js

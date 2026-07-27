@@ -1,0 +1,20 @@
+name: Publish App Store release
+
+on:
+  repository_dispatch:
+    types:
+      - app_store_ready_for_distribution
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: Sid-MB/app-store-connect-release/.github/workflows/release.yml@v1
+    with:
+      payload-json: ${{ toJSON(github.event.client_payload) }}
+      tag-template: v{version}
+    secrets:
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
