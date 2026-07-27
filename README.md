@@ -15,7 +15,7 @@ The project contains:
 - Node.js 22 or newer.
 - [GitHub CLI](https://cli.github.com/) installed and allowed to administer the target repository.
 - `curl`.
-- A Cloudflare account. Wrangler is downloaded through `npx`, so a global installation is not required.
+- A Cloudflare account. Wrangler is bundled as a runtime dependency, so a global installation is not required.
 - An App Store Connect user with the Account Holder, Admin, or App Manager role.
 
 From the Git repository that should receive releases, run:
@@ -30,7 +30,7 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 2. Helps you create either an App Store Connect team API key with App Manager access or an individual API key owned by an App Manager or higher.
 3. Infers the Key ID from Apple's standard `AuthKey_<KEY_ID>.p8` filename, prompts only when the file was renamed, validates the private key locally, and lists the apps available to it.
 4. Provides a prefilled GitHub fine-grained token URL and asks you to restrict the token to the current repository with `Contents: write`.
-5. Prompts for a Cloudflare Worker name with the default `<repository>-appstoreconnect-webhook-receiver`, forwards npm's one-time Wrangler installation confirmation when needed, signs in to Cloudflare, deploys the isolated Worker, and uploads its secrets.
+5. Prompts for a Cloudflare Worker name with the default `<repository>-appstoreconnect-webhook-receiver`, signs in to Cloudflare using the bundled Wrangler CLI, deploys the isolated Worker, and uploads its secrets.
 6. Stores the Apple API credentials as GitHub Actions secrets.
 7. Commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
 8. Creates or updates the matching App Store Connect webhook through `POST /v1/webhooks` or `PATCH /v1/webhooks/{id}`.

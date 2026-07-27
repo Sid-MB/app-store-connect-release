@@ -7,13 +7,16 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
+var require2 = createRequire(import.meta.url);
 var APPLE_API = "https://api.appstoreconnect.apple.com";
 var APPLE_KEYS_URL = "https://appstoreconnect.apple.com/access/integrations/api";
 var WORKFLOW_PATH = ".github/workflows/app-store-connect-release.yml";
 var GITHUB_API_VERSION = "2026-03-10";
 var EVENT_TYPE = "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED";
+var WRANGLER_BIN = resolve(dirname(require2.resolve("wrangler/package.json")), "bin/wrangler.js");
 function step(message) {
   process.stdout.write(`
 \u203A ${message}
@@ -21,6 +24,7 @@ function step(message) {
 }
 function run(command2, args, options = {}) {
   const capture = options.capture ?? false;
+  const commandName = options.commandName ?? command2;
   const result = spawnSync(command2, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
@@ -28,13 +32,16 @@ function run(command2, args, options = {}) {
     encoding: "utf8",
     stdio: options.inherit ? "inherit" : [options.input === void 0 ? "inherit" : "pipe", capture ? "pipe" : "inherit", capture ? "pipe" : "inherit"]
   });
-  if (result.error) throw new Error(`Unable to run ${command2}: ${result.error.message}`);
+  if (result.error) throw new Error(`Unable to run ${commandName}: ${result.error.message}`);
   if (result.status !== 0 && !options.allowFailure) {
     const detail = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(`${command2} exited with status ${result.status}${detail ? `:
+    throw new Error(`${commandName} exited with status ${result.status}${detail ? `:
 ${detail}` : "."}`);
   }
   return result;
+}
+function runWrangler(args, options = {}) {
+  return run(process.execPath, [WRANGLER_BIN, ...args], { ...options, commandName: "wrangler" });
 }
 function requireCommand(command2, installHint) {
   const result = run(command2, ["--version"], { capture: true, allowFailure: true });
@@ -250,11 +257,10 @@ ${tokenUrl}`);
     validate: validateWorkerName
   })).trim().toLowerCase();
   step("Authenticating Cloudflare Wrangler.");
-  run("npx", ["wrangler", "--version"], { inherit: true });
-  if (run("npx", ["wrangler", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
-    run("npx", ["wrangler", "login"], { inherit: true });
+  if (runWrangler(["whoami"], { capture: true, allowFailure: true }).status !== 0) {
+    runWrangler(["login"], { inherit: true });
   }
-  run("npx", ["wrangler", "whoami"], { capture: true });
+  runWrangler(["whoami"], { capture: true });
   const webhookSecret = randomBytes(32).toString("hex");
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
   const outputPath = resolve(temporaryDirectory, "wrangler.ndjson");
@@ -262,14 +268,14 @@ ${tokenUrl}`);
   const workerConfig = resolve(cliDirectory, "../../worker/wrangler.jsonc");
   try {
     step(`Deploying Cloudflare Worker ${workerName}.`);
-    const deployment = run("npx", ["wrangler", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
+    const deployment = runWrangler(["deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
       capture: true,
       env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
     });
     process.stdout.write(deployment.stdout);
     const workerUrl = readWorkerUrl(outputPath, deployment.stdout);
     step("Uploading Worker secrets. Their values are never written to this repository.");
-    run("npx", ["wrangler", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
+    runWrangler(["secret", "bulk", "--config", workerConfig, "--name", workerName], {
       input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
     });
     step("Installing App Store Connect credentials as GitHub Actions secrets.");

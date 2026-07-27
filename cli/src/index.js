@@ -4,14 +4,17 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 
+const require = createRequire(import.meta.url);
 const APPLE_API = "https://api.appstoreconnect.apple.com";
 const APPLE_KEYS_URL = "https://appstoreconnect.apple.com/access/integrations/api";
 const WORKFLOW_PATH = ".github/workflows/app-store-connect-release.yml";
 const GITHUB_API_VERSION = "2026-03-10";
 const EVENT_TYPE = "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED";
+const WRANGLER_BIN = resolve(dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js");
 
 /** Print setup progress in a consistent, scan-friendly form. */
 function step(message) {
@@ -21,6 +24,7 @@ function step(message) {
 /** Execute a command without a shell so pasted values cannot be interpreted as shell syntax. */
 function run(command, args, options = {}) {
   const capture = options.capture ?? false;
+  const commandName = options.commandName ?? command;
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
@@ -28,12 +32,17 @@ function run(command, args, options = {}) {
     encoding: "utf8",
     stdio: options.inherit ? "inherit" : [options.input === undefined ? "inherit" : "pipe", capture ? "pipe" : "inherit", capture ? "pipe" : "inherit"]
   });
-  if (result.error) throw new Error(`Unable to run ${command}: ${result.error.message}`);
+  if (result.error) throw new Error(`Unable to run ${commandName}: ${result.error.message}`);
   if (result.status !== 0 && !options.allowFailure) {
     const detail = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
-    throw new Error(`${command} exited with status ${result.status}${detail ? `:\n${detail}` : "."}`);
+    throw new Error(`${commandName} exited with status ${result.status}${detail ? `:\n${detail}` : "."}`);
   }
   return result;
+}
+
+/** Run the packaged Wrangler CLI with the current Node executable so setup never depends on a global binary or nested npx invocation. */
+function runWrangler(args, options = {}) {
+  return run(process.execPath, [WRANGLER_BIN, ...args], { ...options, commandName: "wrangler" });
 }
 
 /** Require a command before any external state is changed. */
@@ -289,12 +298,10 @@ async function setup() {
   })).trim().toLowerCase();
 
   step("Authenticating Cloudflare Wrangler.");
-  // Keep this first invocation interactive so npx can ask the user to approve installing Wrangler when it is not already available.
-  run("npx", ["wrangler", "--version"], { inherit: true });
-  if (run("npx", ["wrangler", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
-    run("npx", ["wrangler", "login"], { inherit: true });
+  if (runWrangler(["whoami"], { capture: true, allowFailure: true }).status !== 0) {
+    runWrangler(["login"], { inherit: true });
   }
-  run("npx", ["wrangler", "whoami"], { capture: true });
+  runWrangler(["whoami"], { capture: true });
 
   const webhookSecret = randomBytes(32).toString("hex");
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
@@ -304,7 +311,7 @@ async function setup() {
 
   try {
     step(`Deploying Cloudflare Worker ${workerName}.`);
-    const deployment = run("npx", ["wrangler", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
+    const deployment = runWrangler(["deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
       capture: true,
       env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
     });
@@ -312,7 +319,7 @@ async function setup() {
     const workerUrl = readWorkerUrl(outputPath, deployment.stdout);
 
     step("Uploading Worker secrets. Their values are never written to this repository.");
-    run("npx", ["wrangler", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
+    runWrangler(["secret", "bulk", "--config", workerConfig, "--name", workerName], {
       input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
     });
 
