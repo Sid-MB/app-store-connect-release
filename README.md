@@ -32,11 +32,12 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 4. Provides a prefilled GitHub fine-grained token URL and asks you to restrict the token to the current repository with `Contents: write`.
 5. Prompts for a Cloudflare Worker name with the default `<repository>-appstoreconnect-webhook-receiver`, signs in to Cloudflare using the bundled Wrangler CLI, deploys the isolated Worker, and uploads its secrets.
 6. Stores the Apple API credentials as GitHub Actions secrets.
-7. Commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
+7. Verifies GitHub dispatch access and the Worker's public health endpoint.
 8. Creates or updates the matching App Store Connect webhook through `POST /v1/webhooks` or `PATCH /v1/webhooks/{id}`.
-9. Verifies GitHub dispatch access and Worker health, then requests Apple's signed Ping delivery. The CLI retries transient ping failures and reports a nonfatal warning if Apple's optional test-delivery service remains unavailable after the webhook is configured.
+9. Requests Apple's signed Ping delivery, retrying transient failures up to three times.
+10. Only after every preceding step succeeds, commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
 
-Rerunning setup is safe: it redeploys the same Worker, rotates its Apple webhook secret, updates the matching webhook, replaces the GitHub secrets, and does not duplicate the listener workflow.
+Rerunning setup is safe: it redeploys the same Worker, rotates its Apple webhook secret, updates the matching webhook, replaces the GitHub secrets, and does not duplicate the listener workflow. If setup fails before the final step, the workflow file is not committed.
 
 ## What happens on release
 

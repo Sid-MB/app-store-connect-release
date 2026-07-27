@@ -350,9 +350,6 @@ async function setup() {
       run("gh", ["secret", "delete", "APP_STORE_CONNECT_ISSUER_ID", "--repo", repository], { capture: true, allowFailure: true });
     }
 
-    step("Installing the repository_dispatch listener.");
-    installWorkflow(repository, defaultBranch);
-
     step("Validating the GitHub dispatch credential.");
     testGitHubDispatchToken(repository, dispatchToken.trim());
 
@@ -362,13 +359,15 @@ async function setup() {
     if (!webhook) throw new Error("The webhook was created but could not be read back from App Store Connect.");
 
     step("Requesting Apple's signed test delivery.");
-    let pingWarning = "";
     try {
       await testAppleWebhook(webhook.id, appleToken);
     } catch (error) {
-      pingWarning = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`\nWarning: The webhook is configured and its Worker is healthy, but Apple's optional test-delivery request failed after three attempts: ${pingWarning}\n`);
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Apple's test delivery failed after three attempts. The webhook remains configured, but ${WORKFLOW_PATH} was not committed. Rerun setup safely to finish. ${detail}`);
     }
+
+    step("Installing the repository_dispatch listener as the final setup step.");
+    installWorkflow(repository, defaultBranch);
 
     process.stdout.write(`\nSetup complete.\n\n`);
     process.stdout.write(`App: ${app.attributes.name} (${app.attributes.bundleId})\n`);
@@ -376,7 +375,6 @@ async function setup() {
     process.stdout.write(`Worker: ${workerUrl}\n`);
     process.stdout.write(`Webhook ID: ${webhook.id}\n`);
     process.stdout.write(`Workflow: https://github.com/${repository}/blob/${defaultBranch}/${WORKFLOW_PATH}\n\n`);
-    if (pingWarning) process.stdout.write("Apple test delivery: Pending. Retry Test Webhook in App Store Connect; the configured webhook remains enabled.\n\n");
     process.stdout.write("When Apple sends READY_FOR_DISTRIBUTION, the workflow will require an existing tag named v<version>, generate release notes, append the authenticated Apple event metadata, and publish the release.\n");
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
