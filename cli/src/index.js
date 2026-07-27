@@ -81,6 +81,27 @@ function expandPath(path) {
   return resolve(path.startsWith("~/") ? `${homedir()}/${path.slice(2)}` : path);
 }
 
+/** Infer Apple's key ID from its standard AuthKey_<KEY_ID>.p8 download filename, while allowing renamed files to fall back to a prompt. */
+function inferKeyId(privateKeyPath) {
+  return basename(privateKeyPath).match(/^AuthKey_([a-z0-9]{10})\.p8$/i)?.[1]?.toUpperCase() ?? "";
+}
+
+/** Build a readable workers.dev-safe default while preserving the descriptive suffix when a repository name is long. */
+function defaultWorkerName(repository) {
+  const suffix = "-appstoreconnect-webhook-receiver";
+  const repositoryName = repository.split("/").at(-1).toLowerCase().replaceAll(/[^a-z0-9-]/g, "-").replaceAll(/-+/g, "-").replace(/^-|-$/g, "") || "app";
+  return `${repositoryName.slice(0, 63 - suffix.length).replace(/-$/, "")}${suffix}`;
+}
+
+/** Enforce Cloudflare's workers.dev DNS-label restrictions before starting a deployment. */
+function validateWorkerName(value) {
+  const name = value.trim();
+  if (!name) return "Worker name is required.";
+  if (name.length > 63) return "Worker name must be 63 characters or less.";
+  if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(name)) return "Use only letters, numbers, and dashes, and do not start or end with a dash.";
+  return true;
+}
+
 /** Store one value in GitHub Actions without placing it in the command line or logs. */
 function setGitHubSecret(repository, name, value) {
   run("gh", ["secret", "set", name, "--repo", repository], { input: value });
@@ -230,9 +251,12 @@ async function setup() {
     ]
   });
   const issuerId = keyType === "team" ? await input({ message: "Paste the Issuer ID:", validate: (value) => value.trim() ? true : "Issuer ID is required for a team key." }) : "";
-  const keyId = await input({ message: "Paste the Key ID:", validate: (value) => value.trim() ? true : "Key ID is required." });
   const privateKeyPath = await input({ message: "Paste or drag the downloaded .p8 file path here:", validate: (value) => existsSync(expandPath(value.trim())) ? true : "That file does not exist." });
-  const privateKey = readFileSync(expandPath(privateKeyPath.trim()), "utf8").trim();
+  const expandedPrivateKeyPath = expandPath(privateKeyPath.trim());
+  const inferredKeyId = inferKeyId(expandedPrivateKeyPath);
+  if (inferredKeyId) step(`Inferred App Store Connect Key ID ${inferredKeyId} from ${basename(expandedPrivateKeyPath)}.`);
+  const keyId = inferredKeyId || await input({ message: "The .p8 filename is nonstandard. Paste the Key ID:", validate: (value) => value.trim() ? true : "Key ID is required." });
+  const privateKey = readFileSync(expandedPrivateKeyPath, "utf8").trim();
   try {
     createPrivateKey(privateKey);
   } catch {
@@ -258,14 +282,18 @@ async function setup() {
   step(`Create a fine-grained GitHub token at:\n${tokenUrl}`);
   process.stdout.write(`Select “Only select repositories”, choose ${repository}, keep Contents: write, and create the token. The Worker uses it only to call repository_dispatch.\n`);
   const dispatchToken = await password({ message: "Paste the fine-grained GitHub token:", mask: true, validate: (value) => value.trim() ? true : "A token is required." });
+  const workerName = (await input({
+    message: "Cloudflare Worker name:",
+    default: defaultWorkerName(repository),
+    validate: validateWorkerName
+  })).trim().toLowerCase();
 
   step("Authenticating Cloudflare Wrangler.");
-  if (run("npx", ["--yes", "wrangler@4", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
-    run("npx", ["--yes", "wrangler@4", "login"], { inherit: true });
+  if (run("npx", ["--yes", "wrangler", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
+    run("npx", ["--yes", "wrangler", "login"], { inherit: true });
   }
-  run("npx", ["--yes", "wrangler@4", "whoami"], { capture: true });
+  run("npx", ["--yes", "wrangler", "whoami"], { capture: true });
 
-  const workerName = `asc-release-${repository}`.toLowerCase().replaceAll(/[^a-z0-9-]/g, "-").replaceAll(/-+/g, "-").slice(0, 63).replace(/-$/, "");
   const webhookSecret = randomBytes(32).toString("hex");
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
   const outputPath = resolve(temporaryDirectory, "wrangler.ndjson");
@@ -274,7 +302,7 @@ async function setup() {
 
   try {
     step(`Deploying Cloudflare Worker ${workerName}.`);
-    const deployment = run("npx", ["--yes", "wrangler@4", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
+    const deployment = run("npx", ["--yes", "wrangler", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
       capture: true,
       env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
     });
@@ -282,7 +310,7 @@ async function setup() {
     const workerUrl = readWorkerUrl(outputPath, deployment.stdout);
 
     step("Uploading Worker secrets. Their values are never written to this repository.");
-    run("npx", ["--yes", "wrangler@4", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
+    run("npx", ["--yes", "wrangler", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
       input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
     });
 
