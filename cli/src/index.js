@@ -289,10 +289,12 @@ async function setup() {
   })).trim().toLowerCase();
 
   step("Authenticating Cloudflare Wrangler.");
-  if (run("npx", ["--yes", "wrangler", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
-    run("npx", ["--yes", "wrangler", "login"], { inherit: true });
+  // Keep this first invocation interactive so npx can ask the user to approve installing Wrangler when it is not already available.
+  run("npx", ["wrangler", "--version"], { inherit: true });
+  if (run("npx", ["wrangler", "whoami"], { capture: true, allowFailure: true }).status !== 0) {
+    run("npx", ["wrangler", "login"], { inherit: true });
   }
-  run("npx", ["--yes", "wrangler", "whoami"], { capture: true });
+  run("npx", ["wrangler", "whoami"], { capture: true });
 
   const webhookSecret = randomBytes(32).toString("hex");
   const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
@@ -302,7 +304,7 @@ async function setup() {
 
   try {
     step(`Deploying Cloudflare Worker ${workerName}.`);
-    const deployment = run("npx", ["--yes", "wrangler", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
+    const deployment = run("npx", ["wrangler", "deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
       capture: true,
       env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
     });
@@ -310,7 +312,7 @@ async function setup() {
     const workerUrl = readWorkerUrl(outputPath, deployment.stdout);
 
     step("Uploading Worker secrets. Their values are never written to this repository.");
-    run("npx", ["--yes", "wrangler", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
+    run("npx", ["wrangler", "secret", "bulk", "--config", workerConfig, "--name", workerName], {
       input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
     });
 
