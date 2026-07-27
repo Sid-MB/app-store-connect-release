@@ -34,7 +34,7 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 6. Stores the Apple API credentials as GitHub Actions secrets.
 7. Commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
 8. Creates or updates the matching App Store Connect webhook through `POST /v1/webhooks` or `PATCH /v1/webhooks/{id}`.
-9. Verifies GitHub dispatch access, requests Apple's signed Ping delivery, and checks Worker health.
+9. Verifies GitHub dispatch access and Worker health, then requests Apple's signed Ping delivery. The CLI retries transient ping failures and reports a nonfatal warning if Apple's optional test-delivery service remains unavailable after the webhook is configured.
 
 Rerunning setup is safe: it redeploys the same Worker, rotates its Apple webhook secret, updates the matching webhook, replaces the GitHub secrets, and does not duplicate the listener workflow.
 

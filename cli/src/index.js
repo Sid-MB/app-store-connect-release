@@ -68,18 +68,21 @@ function createAppleToken({ keyType, issuerId, keyId, privateKey }) {
 
 /** Call App Store Connect with curl and preserve Apple's structured error details. */
 function appleRequest(method, path, token, body) {
-  const args = ["--silent", "--show-error", "--request", method, "--header", `Authorization: Bearer ${token}`, "--header", "Accept: application/json"];
+  const args = ["--disable", "--silent", "--show-error", "--write-out", "\n%{http_code}", "--request", method, "--header", `Authorization: Bearer ${token}`, "--header", "Accept: application/json"];
   if (body !== undefined) args.push("--header", "Content-Type: application/json", "--data-binary", JSON.stringify(body));
   args.push(`${APPLE_API}${path}`);
   const result = run("curl", args, { capture: true, allowFailure: true });
+  const statusSeparator = result.stdout.lastIndexOf("\n");
+  const responseBody = statusSeparator >= 0 ? result.stdout.slice(0, statusSeparator) : result.stdout;
+  const httpStatus = Number.parseInt(statusSeparator >= 0 ? result.stdout.slice(statusSeparator + 1) : "0", 10);
   let parsed;
   try {
-    parsed = JSON.parse(result.stdout || "{}");
+    parsed = JSON.parse(responseBody || "{}");
   } catch {
     parsed = {};
   }
-  if (result.status !== 0 || parsed.errors) {
-    const details = parsed.errors?.map((error) => error.detail ?? error.title).filter(Boolean).join("; ") ?? result.stderr.trim();
+  if (result.status !== 0 || !Number.isInteger(httpStatus) || httpStatus < 200 || httpStatus >= 300 || parsed.errors) {
+    const details = parsed.errors?.map((error) => error.detail ?? error.title).filter(Boolean).join("; ") || result.stderr.trim() || `HTTP ${httpStatus || "request failure"}`;
     throw new Error(`App Store Connect request ${method} ${path} failed${details ? `: ${details}` : "."}`);
   }
   return parsed;
@@ -189,19 +192,29 @@ function upsertAppleWebhook({ app, token, workerUrl, webhookSecret, repository }
   return { id: created.data.id, updated: false };
 }
 
-/** Ask Apple to send a signed Ping delivery after configuration so the endpoint is exercised end to end. */
-function testAppleWebhook(webhookId, token) {
-  appleRequest("POST", "/v1/webhookPings", token, {
-    data: {
-      type: "webhookPings",
-      relationships: { webhook: { data: { type: "webhooks", id: webhookId } } }
+/** Ask Apple to send a signed Ping delivery, retrying transient server failures without changing the webhook configuration. */
+async function testAppleWebhook(webhookId, token) {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return appleRequest("POST", "/v1/webhookPings", token, {
+        data: {
+          type: "webhookPings",
+          relationships: { webhook: { data: { type: "webhooks", id: webhookId } } }
+        }
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolveDelay) => setTimeout(resolveDelay, attempt * 1_000));
     }
-  });
+  }
+  throw lastError;
 }
 
 /** Verify the dispatch credential separately without starting the release workflow. */
 function testGitHubDispatchToken(repository, token) {
   const result = run("curl", [
+    "--disable",
     "--silent",
     "--show-error",
     "--output",
@@ -323,6 +336,11 @@ async function setup() {
       input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
     });
 
+    step("Validating the deployed Worker's public health endpoint.");
+    const health = run("curl", ["--disable", "--silent", "--show-error", "--fail", workerUrl], { capture: true });
+    const healthPayload = JSON.parse(health.stdout);
+    if (!healthPayload.healthy || healthPayload.repository !== repository) throw new Error("The Worker health response does not match the configured repository.");
+
     step("Installing App Store Connect credentials as GitHub Actions secrets.");
     setGitHubSecret(repository, "APP_STORE_CONNECT_KEY_ID", keyId.trim());
     setGitHubSecret(repository, "APP_STORE_CONNECT_PRIVATE_KEY", privateKey);
@@ -344,11 +362,13 @@ async function setup() {
     if (!webhook) throw new Error("The webhook was created but could not be read back from App Store Connect.");
 
     step("Requesting Apple's signed test delivery.");
-    testAppleWebhook(webhook.id, appleToken);
-
-    const health = run("curl", ["--silent", "--show-error", "--fail", workerUrl], { capture: true });
-    const healthPayload = JSON.parse(health.stdout);
-    if (!healthPayload.healthy || healthPayload.repository !== repository) throw new Error("The Worker health response does not match the configured repository.");
+    let pingWarning = "";
+    try {
+      await testAppleWebhook(webhook.id, appleToken);
+    } catch (error) {
+      pingWarning = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`\nWarning: The webhook is configured and its Worker is healthy, but Apple's optional test-delivery request failed after three attempts: ${pingWarning}\n`);
+    }
 
     process.stdout.write(`\nSetup complete.\n\n`);
     process.stdout.write(`App: ${app.attributes.name} (${app.attributes.bundleId})\n`);
@@ -356,6 +376,7 @@ async function setup() {
     process.stdout.write(`Worker: ${workerUrl}\n`);
     process.stdout.write(`Webhook ID: ${webhook.id}\n`);
     process.stdout.write(`Workflow: https://github.com/${repository}/blob/${defaultBranch}/${WORKFLOW_PATH}\n\n`);
+    if (pingWarning) process.stdout.write("Apple test delivery: Pending. Retry Test Webhook in App Store Connect; the configured webhook remains enabled.\n\n");
     process.stdout.write("When Apple sends READY_FOR_DISTRIBUTION, the workflow will require an existing tag named v<version>, generate release notes, append the authenticated Apple event metadata, and publish the release.\n");
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
