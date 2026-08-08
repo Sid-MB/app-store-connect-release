@@ -37,7 +37,13 @@ The CLI prompts for one value at a time and explains where to obtain it. It:
 9. Requests Apple's signed Ping delivery, retrying transient failures up to three times.
 10. Only after every preceding step succeeds, commits `.github/workflows/app-store-connect-release.yml` directly to the default branch if it does not already exist.
 
-Rerunning setup is safe: it redeploys the same Worker, rotates its Apple webhook secret, updates the matching webhook, replaces the GitHub secrets, and does not duplicate the listener workflow. If setup fails before the final step, the workflow file is not committed.
+Rerunning full setup is safe: it redeploys the same Worker, rotates its Apple webhook secret, updates the matching webhook, replaces the GitHub secrets, and does not duplicate the listener workflow. If setup fails before the final step, the workflow file is not committed.
+
+### Redeploy without repasting secrets
+
+Run the same setup command. Before requesting any Apple or GitHub credentials, the CLI checks whether the selected Cloudflare Worker exists and lists only its configured secret names; Cloudflare never exposes their values. When both `APPLE_WEBHOOK_SECRET` and `GITHUB_DISPATCH_TOKEN` are present, setup recommends **Redeploy this Worker only and preserve its existing secrets**.
+
+That path updates the Worker code and `wrangler.jsonc` configuration, including observability settings, validates its public health endpoint, and exits without changing Cloudflare secrets, App Store Connect, GitHub Actions secrets, or the repository workflow. You can instead select full setup to rotate or repair credentials, or select the manual option to exit without making changes.
 
 ## What happens on release
 

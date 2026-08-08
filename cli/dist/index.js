@@ -17,6 +17,8 @@ var WORKFLOW_PATH = ".github/workflows/app-store-connect-release.yml";
 var GITHUB_API_VERSION = "2026-03-10";
 var EVENT_TYPE = "APP_STORE_VERSION_APP_VERSION_STATE_UPDATED";
 var WRANGLER_BIN = resolve(dirname(require2.resolve("wrangler/package.json")), "bin/wrangler.js");
+var WORKER_CONFIG = resolve(dirname(fileURLToPath(import.meta.url)), "../../worker/wrangler.jsonc");
+var REQUIRED_WORKER_SECRETS = ["APPLE_WEBHOOK_SECRET", "GITHUB_DISPATCH_TOKEN"];
 function step(message) {
   process.stdout.write(`
 \u203A ${message}
@@ -95,6 +97,48 @@ function validateWorkerName(value) {
   if (name.length > 63) return "Worker name must be 63 characters or less.";
   if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(name)) return "Use only letters, numbers, and dashes, and do not start or end with a dash.";
   return true;
+}
+function inspectWorker(workerName) {
+  const deploymentsResult = runWrangler(["deployments", "list", "--config", WORKER_CONFIG, "--name", workerName, "--json"], { capture: true, allowFailure: true });
+  const deploymentDetail = `${deploymentsResult.stderr ?? ""}
+${deploymentsResult.stdout ?? ""}`;
+  if (deploymentDetail.includes("does not exist on your account") || deploymentDetail.includes("code: 10007")) return { exists: false, secretNames: [] };
+  let deployments;
+  try {
+    deployments = JSON.parse(deploymentsResult.stdout || "[]");
+  } catch {
+    throw new Error(`Wrangler could not inspect Cloudflare Worker ${workerName}.${deploymentsResult.stderr ? `
+${deploymentsResult.stderr.trim()}` : ""}`);
+  }
+  if (deploymentsResult.status !== 0) throw new Error(`Wrangler could not inspect Cloudflare Worker ${workerName}.`);
+  if (!Array.isArray(deployments) || deployments.length === 0) return { exists: false, secretNames: [] };
+  const secretsResult = runWrangler(["secret", "list", "--config", WORKER_CONFIG, "--name", workerName, "--format", "json"], { capture: true });
+  let secrets;
+  try {
+    secrets = JSON.parse(secretsResult.stdout || "[]");
+  } catch {
+    throw new Error(`Wrangler found ${workerName}, but could not read its secret names.`);
+  }
+  return { exists: true, secretNames: secrets.map((secret) => secret.name).filter(Boolean) };
+}
+function deployWorker(repository, workerName) {
+  const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
+  const outputPath = resolve(temporaryDirectory, "wrangler.ndjson");
+  try {
+    const deployment = runWrangler(["deploy", "--config", WORKER_CONFIG, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
+      capture: true,
+      env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
+    });
+    process.stdout.write(deployment.stdout);
+    return readWorkerUrl(outputPath, deployment.stdout);
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+function validateWorkerHealth(workerUrl, repository) {
+  const health = run("curl", ["--disable", "--silent", "--show-error", "--fail", workerUrl], { capture: true });
+  const healthPayload = JSON.parse(health.stdout);
+  if (!healthPayload.healthy || healthPayload.repository !== repository) throw new Error("The Worker health response does not match the configured repository.");
 }
 function setGitHubSecret(repository, name, value) {
   run("gh", ["secret", "set", name, "--repo", repository], { input: value });
@@ -221,8 +265,53 @@ async function setup() {
   const repositoryInfo = JSON.parse(run("gh", ["repo", "view", "--json", "nameWithOwner,defaultBranchRef,viewerPermission"], { cwd: repositoryRoot, capture: true }).stdout);
   const repository = repositoryInfo.nameWithOwner;
   const defaultBranch = repositoryInfo.defaultBranchRef.name;
-  const approved = await confirm({ message: `Configure ${repository} and commit the listener workflow directly to ${defaultBranch}?`, default: true });
+  const approved = await confirm({ message: `Manage App Store release automation for ${repository}?`, default: true });
   if (!approved) throw new Error("Setup cancelled.");
+  const workerName = (await input({
+    message: "Cloudflare Worker name:",
+    default: defaultWorkerName(repository),
+    validate: validateWorkerName
+  })).trim().toLowerCase();
+  step("Authenticating Cloudflare Wrangler.");
+  if (runWrangler(["whoami"], { capture: true, allowFailure: true }).status !== 0) {
+    runWrangler(["login"], { inherit: true });
+  }
+  runWrangler(["whoami"], { capture: true });
+  step(`Checking Cloudflare Worker ${workerName}.`);
+  const workerState = inspectWorker(workerName);
+  const missingWorkerSecrets = REQUIRED_WORKER_SECRETS.filter((name) => !workerState.secretNames.includes(name));
+  if (workerState.exists) {
+    process.stdout.write(`Found the existing Worker with ${workerState.secretNames.length} configured secret${workerState.secretNames.length === 1 ? "" : "s"}. Secret values remain unreadable.
+`);
+  } else {
+    process.stdout.write("No existing Worker was found with that name.\n");
+  }
+  const setupMode = await select({
+    message: "How should setup continue?",
+    choices: [
+      ...workerState.exists && missingWorkerSecrets.length === 0 ? [{ name: "Redeploy this Worker only and preserve its existing secrets (Recommended)", value: "redeploy" }] : [],
+      { name: `${workerState.exists ? "Run full setup and rotate/reconfigure credentials" : "Run full automatic setup"}${missingWorkerSecrets.length ? ` (missing Worker secrets: ${missingWorkerSecrets.join(", ")})` : ""}`, value: "full" },
+      { name: "Make no changes; I will configure components manually", value: "manual" }
+    ]
+  });
+  if (setupMode === "manual") {
+    process.stdout.write("\nNo changes made. See the Manual setup section in the project README.\n");
+    return;
+  }
+  if (setupMode === "redeploy") {
+    step(`Redeploying Cloudflare Worker ${workerName} without changing its secrets.`);
+    const workerUrl2 = deployWorker(repository, workerName);
+    step("Validating the redeployed Worker's public health endpoint.");
+    validateWorkerHealth(workerUrl2, repository);
+    process.stdout.write(`
+Worker redeploy complete.
+
+Repository: https://github.com/${repository}
+Worker: ${workerUrl2}
+Existing secrets preserved: ${REQUIRED_WORKER_SECRETS.join(", ")}
+`);
+    return;
+  }
   step(`Create an App Store Connect API key at ${APPLE_KEYS_URL}`);
   process.stdout.write("Use a team key with App Manager access, or an individual key belonging to an Account Holder, Admin, or App Manager. Download the .p8 file now; Apple only offers it once.\n");
   const keyType = await select({
@@ -264,87 +353,62 @@ ${tokenUrl}`);
   process.stdout.write(`Select \u201COnly select repositories\u201D, choose ${repository}, keep Contents: write, and create the token. The Worker uses it only to call repository_dispatch.
 `);
   const dispatchToken = await password({ message: "Paste the fine-grained GitHub token:", mask: true, validate: (value) => value.trim() ? true : "A token is required." });
-  const workerName = (await input({
-    message: "Cloudflare Worker name:",
-    default: defaultWorkerName(repository),
-    validate: validateWorkerName
-  })).trim().toLowerCase();
-  step("Authenticating Cloudflare Wrangler.");
-  if (runWrangler(["whoami"], { capture: true, allowFailure: true }).status !== 0) {
-    runWrangler(["login"], { inherit: true });
-  }
-  runWrangler(["whoami"], { capture: true });
   const webhookSecret = randomBytes(32).toString("hex");
-  const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "asc-release-"));
-  const outputPath = resolve(temporaryDirectory, "wrangler.ndjson");
-  const cliDirectory = dirname(fileURLToPath(import.meta.url));
-  const workerConfig = resolve(cliDirectory, "../../worker/wrangler.jsonc");
+  step(`Deploying Cloudflare Worker ${workerName}.`);
+  const workerUrl = deployWorker(repository, workerName);
+  step("Uploading Worker secrets. Their values are never written to this repository.");
+  runWrangler(["secret", "bulk", "--config", WORKER_CONFIG, "--name", workerName], {
+    input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
+  });
+  step("Validating the deployed Worker's public health endpoint.");
+  validateWorkerHealth(workerUrl, repository);
+  step("Installing App Store Connect credentials as GitHub Actions secrets.");
+  setGitHubSecret(repository, "APP_STORE_CONNECT_KEY_ID", keyId.trim());
+  setGitHubSecret(repository, "APP_STORE_CONNECT_PRIVATE_KEY", privateKey);
+  if (keyType === "team") {
+    setGitHubSecret(repository, "APP_STORE_CONNECT_ISSUER_ID", issuerId.trim());
+  } else {
+    run("gh", ["secret", "delete", "APP_STORE_CONNECT_ISSUER_ID", "--repo", repository], { capture: true, allowFailure: true });
+  }
+  step("Validating the GitHub dispatch credential.");
+  testGitHubDispatchToken(repository, dispatchToken.trim());
+  step(`${upsertAppleWebhook({ app, token: appleToken, workerUrl, webhookSecret, repository }).updated ? "Updated" : "Created"} the App Store Connect webhook.`);
+  const webhooks = appleRequest("GET", `/v1/apps/${encodeURIComponent(app.id)}/webhooks?fields%5Bwebhooks%5D=enabled,eventTypes,name,url&limit=200`, appleToken);
+  const webhook = webhooks.data.find((candidate) => candidate.attributes?.url === workerUrl);
+  if (!webhook) throw new Error("The webhook was created but could not be read back from App Store Connect.");
+  step("Requesting Apple's signed test delivery.");
   try {
-    step(`Deploying Cloudflare Worker ${workerName}.`);
-    const deployment = runWrangler(["deploy", "--config", workerConfig, "--name", workerName, "--var", `GITHUB_REPOSITORY:${repository}`, "--var", `GITHUB_API_VERSION:${GITHUB_API_VERSION}`], {
-      capture: true,
-      env: { WRANGLER_OUTPUT_FILE_PATH: outputPath }
-    });
-    process.stdout.write(deployment.stdout);
-    const workerUrl = readWorkerUrl(outputPath, deployment.stdout);
-    step("Uploading Worker secrets. Their values are never written to this repository.");
-    runWrangler(["secret", "bulk", "--config", workerConfig, "--name", workerName], {
-      input: JSON.stringify({ APPLE_WEBHOOK_SECRET: webhookSecret, GITHUB_DISPATCH_TOKEN: dispatchToken.trim() })
-    });
-    step("Validating the deployed Worker's public health endpoint.");
-    const health = run("curl", ["--disable", "--silent", "--show-error", "--fail", workerUrl], { capture: true });
-    const healthPayload = JSON.parse(health.stdout);
-    if (!healthPayload.healthy || healthPayload.repository !== repository) throw new Error("The Worker health response does not match the configured repository.");
-    step("Installing App Store Connect credentials as GitHub Actions secrets.");
-    setGitHubSecret(repository, "APP_STORE_CONNECT_KEY_ID", keyId.trim());
-    setGitHubSecret(repository, "APP_STORE_CONNECT_PRIVATE_KEY", privateKey);
-    if (keyType === "team") {
-      setGitHubSecret(repository, "APP_STORE_CONNECT_ISSUER_ID", issuerId.trim());
-    } else {
-      run("gh", ["secret", "delete", "APP_STORE_CONNECT_ISSUER_ID", "--repo", repository], { capture: true, allowFailure: true });
-    }
-    step("Validating the GitHub dispatch credential.");
-    testGitHubDispatchToken(repository, dispatchToken.trim());
-    step(`${upsertAppleWebhook({ app, token: appleToken, workerUrl, webhookSecret, repository }).updated ? "Updated" : "Created"} the App Store Connect webhook.`);
-    const webhooks = appleRequest("GET", `/v1/apps/${encodeURIComponent(app.id)}/webhooks?fields%5Bwebhooks%5D=enabled,eventTypes,name,url&limit=200`, appleToken);
-    const webhook = webhooks.data.find((candidate) => candidate.attributes?.url === workerUrl);
-    if (!webhook) throw new Error("The webhook was created but could not be read back from App Store Connect.");
-    step("Requesting Apple's signed test delivery.");
-    try {
-      await testAppleWebhook(webhook.id, appleToken);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Apple's test delivery failed after three attempts. The webhook remains configured, but ${WORKFLOW_PATH} was not committed. Rerun setup safely to finish. ${detail}`);
-    }
-    step("Installing the repository_dispatch listener as the final setup step.");
-    installWorkflow(repository, defaultBranch);
-    process.stdout.write(`
+    await testAppleWebhook(webhook.id, appleToken);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Apple's test delivery failed after three attempts. The webhook remains configured, but ${WORKFLOW_PATH} was not committed. Rerun setup safely to finish. ${detail}`);
+  }
+  step("Installing the repository_dispatch listener as the final setup step.");
+  installWorkflow(repository, defaultBranch);
+  process.stdout.write(`
 Setup complete.
 
 `);
-    process.stdout.write(`App: ${app.attributes.name} (${app.attributes.bundleId})
+  process.stdout.write(`App: ${app.attributes.name} (${app.attributes.bundleId})
 `);
-    process.stdout.write(`Repository: https://github.com/${repository}
+  process.stdout.write(`Repository: https://github.com/${repository}
 `);
-    process.stdout.write(`Worker: ${workerUrl}
+  process.stdout.write(`Worker: ${workerUrl}
 `);
-    process.stdout.write(`Webhook ID: ${webhook.id}
+  process.stdout.write(`Webhook ID: ${webhook.id}
 `);
-    process.stdout.write(`Workflow: https://github.com/${repository}/blob/${defaultBranch}/${WORKFLOW_PATH}
+  process.stdout.write(`Workflow: https://github.com/${repository}/blob/${defaultBranch}/${WORKFLOW_PATH}
 
 `);
-    process.stdout.write("When Apple sends READY_FOR_DISTRIBUTION, the workflow will require an existing tag named v<version>, generate release notes, append the authenticated Apple event metadata, and publish the release.\n");
-  } finally {
-    rmSync(temporaryDirectory, { recursive: true, force: true });
-  }
+  process.stdout.write("When Apple sends READY_FOR_DISTRIBUTION, the workflow will require an existing tag named v<version>, generate release notes, append the authenticated Apple event metadata, and publish the release.\n");
 }
 function printHelp() {
   process.stdout.write(`Usage: asc-release setup
 
-Run from the GitHub repository that should receive releases. The interactive setup configures GitHub, Cloudflare Workers, and App Store Connect without writing credentials to disk.
+Run from the GitHub repository that should receive releases. Setup detects an existing Worker and can redeploy it without reading or replacing its secrets; full automatic and manual paths remain available.
 
 Commands:
-  setup     Configure the current repository (default).
+  setup     Configure or redeploy automation for the current repository (default).
   --help    Show this help.
 `);
 }
