@@ -14,3 +14,5 @@ The interactive CLI deploys and configures this Worker automatically. For manual
 | `GITHUB_API_VERSION` | Variable | GitHub REST API version; defaults to `2026-03-10`. |
 
 Each target app repository gets its own Worker deployment and Apple webhook secret. This keeps compromise and rotation isolated to one app.
+
+`wrangler.jsonc` enables persisted Workers Logs, invocation logs, and 100% head sampling so every delivery attempt can be inspected from the Worker's Observability page in the Cloudflare dashboard.
